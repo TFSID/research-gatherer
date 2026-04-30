@@ -1,0 +1,10 @@
+Network security architecture framework
+Firewall configuration guide Cisco ASA
+VPN implementation IPsec SSL
+Network access control NAC deployment
+Security zones DMZ implementation
+Intrusion detection prevention systems IDS IPS
+Network segmentation security best practices
+Zero trust network architecture
+Secure network design patterns
+Network security hardening checklist

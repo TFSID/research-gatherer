@@ -1,0 +1,5 @@
+### Get For Research Paper
+
+site:researchgate.net "DDoS" filetype:pdf
+
+site:researchgate.net "DDoS" filetype:pdf

@@ -1,0 +1,23 @@
+# Example Keywords for Research Gathering
+# One keyword per line
+# Lines starting with # are ignored
+
+# Cybersecurity Topics
+threat intelligence
+vulnerability assessment
+penetration testing
+security operations center
+incident response
+
+# Cloud Security
+cloud security architecture
+AWS security best practices
+Azure security
+container security
+kubernetes security
+
+# Machine Learning Security
+adversarial machine learning
+AI security
+model poisoning
+federated learning security
