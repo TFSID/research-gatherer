@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+docs/**
+docs/
+jpn_community_research
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+samples/*
+
+# Output
+research_output/
+research_archive/
+cookie/
+*.txt
+!requirements.txt
+!samples/
+!samples/*.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
