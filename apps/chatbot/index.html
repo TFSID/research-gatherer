@@ -101,6 +101,40 @@
   }
   .config-bar input:focus { border-color: var(--accent); }
   .config-bar input::placeholder { color: var(--text-dim); opacity: 0.5; }
+  .config-bar .stream-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .config-bar .stream-toggle input[type="checkbox"] {
+    appearance: none;
+    width: 36px; height: 20px;
+    background: var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .config-bar .stream-toggle input[type="checkbox"]::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .config-bar .stream-toggle input[type="checkbox"]:checked {
+    background: var(--accent);
+  }
+  .config-bar .stream-toggle input[type="checkbox"]:checked::after {
+    transform: translateX(16px);
+    background: #fff;
+  }
 
   /* === Chat Container === */
   .chat-container {
@@ -477,6 +511,10 @@
     BYOK
     <input type="checkbox" id="byokToggle" onchange="toggleByok()">
   </label>
+  <label class="stream-toggle">
+    ⚡ Stream
+    <input type="checkbox" id="streamToggle" checked>
+  </label>
 </div>
 
 <!-- BYOK Fields -->
@@ -537,6 +575,7 @@ function getConfig() {
     base: document.getElementById('apiBase').value.replace(/\/+$/, ''),
     key: document.getElementById('apiKey').value,
     model: document.getElementById('modelName').value || 'research-assistant',
+    stream: document.getElementById('streamToggle').checked,
   };
 }
 
@@ -879,7 +918,107 @@ async function sendWithGatherer(query) {
     setStatus(false, 'Disconnected');
   }
 
-  // Build request with tool calling support
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.key) headers['X-API-Key'] = config.key;
+
+  // ----- Streaming path -----
+  if (config.stream) {
+    // For streaming, we skip tools (backend auto-researches) and stream the answer
+    const body = JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: 'system', content: 'You are ResearchGPT, an expert research assistant. Provide well-cited answers.' },
+        { role: 'user', content: query }
+      ],
+      stream: true,
+      temperature: 0.3,
+      max_tokens: 4096,
+    });
+
+    updateStatus('researching');
+    statusText.textContent = 'Researching...';
+
+    const resp = await fetch(config.base + '/v1/chat/completions', {
+      method: 'POST', headers, body,
+    });
+    removeThinking();
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      let detail = `HTTP ${resp.status}`;
+      try { detail = JSON.parse(errText).detail || detail; } catch (_) {}
+      addMessage('assistant', `**Error:** ${detail}`, true);
+      setStatus(false, `Error ${resp.status}`);
+      return;
+    }
+
+    // Create a placeholder message that we'll update as chunks arrive
+    emptyState.style.display = 'none';
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg assistant';
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = 'ResearchGPT';
+    msgDiv.appendChild(label);
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.textContent = '▊'; // blinking cursor hint
+    msgDiv.appendChild(bubble);
+    chatContainer.insertBefore(msgDiv, scrollAnchor);
+    scrollToBottom();
+
+    // Read SSE stream
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let accumulated = '';
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // keep incomplete line in buffer
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed === 'data: [DONE]') continue;
+          if (!trimmed.startsWith('data: ')) continue;
+
+          try {
+            const chunk = JSON.parse(trimmed.slice(6));
+            const delta = chunk?.choices?.[0]?.delta;
+            if (delta?.content) {
+              accumulated += delta.content;
+              bubble.textContent = accumulated + '▊';
+              // Auto-scroll every few additions
+              scrollAnchor.scrollIntoView({ behavior: 'smooth' });
+            }
+          } catch (_) {
+            // Skip malformed chunks
+          }
+        }
+      }
+      // Final render: parse markdown
+      bubble.innerHTML = renderMarkdown(accumulated) || '▊';
+      scrollToBottom();
+
+      // Add sources section if present in accumulated
+      if (accumulated.includes('## Sources') || accumulated.includes('[1]')) {
+        // Sources are already rendered inline by renderMarkdown
+      }
+    } catch (err) {
+      bubble.textContent = accumulated || 'Connection interrupted.';
+    }
+
+    setStatus(true, 'Connected');
+    return;
+  }
+
+  // ----- Non-streaming path (with tools) -----
   const body = JSON.stringify({
     model: config.model,
     messages: [
@@ -891,8 +1030,6 @@ async function sendWithGatherer(query) {
     temperature: 0.3,
     max_tokens: 4096,
   });
-  const headers = { 'Content-Type': 'application/json' };
-  if (config.key) headers['X-API-Key'] = config.key;
 
   updateStatus('researching');
   statusText.textContent = 'Researching with tools...';

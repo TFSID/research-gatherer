@@ -1,0 +1,100 @@
+volumes:
+  mongo_data:
+  mongo_config:
+
+services:
+  # MongoDB Database - Internal only
+  mongodb:
+    image: mongo:7.0
+    container_name: chatbot-mongodb
+    environment:
+      - MONGO_INITDB_DATABASE=chatbot_db
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
+  # Backend API (FastAPI) - Internal only
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-backend
+    environment:
+      - MONGO_URL=mongodb://mongodb:27017
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./backend:/app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+      - research-network
+
+  # Frontend (Nginx serving static files)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbot-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+      - research-network
+
+  # Research Gatherer (main research API) - Using existing container
+  # Note: Research Gatherer is already running on port 8000
+  # Uncomment below if you need to rebuild it
+  
+  # research-gatherer:
+  #   build:
+  #     context: ../..
+  #     dockerfile: Dockerfile
+  #   container_name: chatbot-research-gatherer
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #   env_file:
+  #     - ../../.env
+  #   volumes:
+  #     - ../../cookies:/app/cookies
+  #     - ../../images:/app/images
+  #   restart: unless-stopped
+  #   networks:
+  #     - chatbot-network
+
+  # Mongo Express (Web UI for MongoDB) - Internal only
+  mongo-express:
+    image: mongo-express:1.0.0-alpha
+    container_name: chatbot-mongo-express
+    environment:
+      - ME_CONFIG_MONGODB_URL=mongodb://mongodb:27017/
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
+networks:
+  chatbot-network:
+    driver: bridge
+  research-network:
+    name: research-network
+    external: true

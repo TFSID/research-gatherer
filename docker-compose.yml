@@ -88,6 +88,7 @@ services:
 
     networks:
       - research-net
+      - chatbot-network
 
     # Resource limits (adjust based on your needs)
     deploy:
@@ -202,3 +203,6 @@ networks:
   research-net:
     name: research-network
     driver: bridge
+  chatbot-network:
+    name: chatbot-network
+    external: true

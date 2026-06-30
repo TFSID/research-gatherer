@@ -61,6 +61,103 @@ from image_gatherer import ImageGatherer  # noqa: E402
 logger = setup_logger(name='ResearchAPI')
 
 # ===================================================================
+# SSE Parser — for LLM backends that always return streaming format
+# ===================================================================
+
+def _parse_sse_to_response(sse_content: str) -> Optional[dict]:
+    """Parse SSE streaming chunks and reconstruct a ChatCompletion response.
+    
+    Handles LLM backends (vLLM, OmniRoute, custom proxies) that always
+    return SSE format even for non-streaming requests.
+    
+    SSE format example:
+        data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+        data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+        data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+        data: [DONE]
+    
+    Returns: dict in OpenAI ChatCompletion format, or None if parsing fails
+    """
+    if not sse_content:
+        return None
+    
+    chunks = []
+    for line in sse_content.strip().split('\n'):
+        line = line.strip()
+        if not line or not line.startswith('data: '):
+            continue
+        data_str = line[6:]  # Remove "data: " prefix
+        if data_str == '[DONE]':
+            break
+        try:
+            chunk = json.loads(data_str)
+            chunks.append(chunk)
+        except (json.JSONDecodeError, ValueError):
+            continue  # Skip malformed chunks
+    
+    if not chunks:
+        return None
+    
+    # Extract metadata from first chunk
+    response_id = chunks[0].get('id', f'chatcmpl-{uuid.uuid4().hex[:12]}')
+    model = chunks[0].get('model', 'unknown')
+    created = int(time.time())
+    
+    # Accumulate deltas across all chunks
+    role = None
+    content_parts = []
+    finish_reason = None
+    
+    for chunk in chunks:
+        choices = chunk.get('choices', [])
+        if not choices:
+            continue
+        
+        choice = choices[0]
+        delta = choice.get('delta', {})
+        finish = choice.get('finish_reason')
+        
+        # Extract role (usually only in first chunk)
+        if delta.get('role'):
+            role = delta['role']
+        
+        # Accumulate content
+        if delta.get('content'):
+            content_parts.append(delta['content'])
+        
+        # Some models include reasoning_content
+        if delta.get('reasoning_content'):
+            content_parts.append(delta['reasoning_content'])
+        
+        # Track finish reason (last non-null wins)
+        if finish is not None:
+            finish_reason = finish
+    
+    # Build the final message
+    message = {
+        'role': role or 'assistant',
+        'content': ''.join(content_parts) if content_parts else None,
+    }
+    
+    # Return in OpenAI ChatCompletion format (non-streaming)
+    return {
+        'id': response_id,
+        'object': 'chat.completion',
+        'created': created,
+        'model': model,
+        'choices': [{
+            'index': 0,
+            'message': message,
+            'finish_reason': finish_reason or 'stop',
+        }],
+        'usage': {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+        },
+    }
+
+# ===================================================================
 # Configuration
 # ===================================================================
 
@@ -706,7 +803,54 @@ class LLMClient:
         resp = await self._request_with_retry(
             'POST', f'{self.base_url}/chat/completions', json=body,
         )
-        return resp.json()
+        # Safe JSON parsing — prevent crash on empty or non-JSON responses
+        content = resp.text
+        if not content or not content.strip():
+            logger.error(
+                f"LLM API returned empty response "
+                f"(status={resp.status_code}, url={resp.url})"
+            )
+            raise HTTPException(
+                502,
+                f'LLM API returned an empty response (HTTP {resp.status_code}). '
+                f'The backend may be down or misconfigured.'
+            )
+        
+        # Detect streaming SSE format (starts with "data: ")
+        # Some LLM backends (vLLM, OmniRoute, custom proxies) always return
+        # SSE streaming format even for non-streaming requests.
+        # We detect and auto-parse the SSE chunks into a proper JSON response.
+        content_trimmed = content.lstrip()
+        if content_trimmed.startswith('data: '):
+            logger.info(
+                f"LLM API returned SSE streaming format on non-streaming request — "
+                f"auto-parsing chunks to reconstruct JSON response. "
+                f"(status={resp.status_code}, url={resp.url})"
+            )
+            reconstructed = _parse_sse_to_response(content)
+            if reconstructed:
+                return reconstructed
+            # Fallback: if reconstruction fails, raise a clear error
+            raise HTTPException(
+                502,
+                'LLM API returned streaming SSE format but the response could not '
+                'be reconstructed into a valid JSON response. '
+                f'First 300 chars: {content[:300]}'
+            )
+        
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            preview = content[:500]
+            logger.error(
+                f"LLM API returned non-JSON response "
+                f"(status={resp.status_code}, url={resp.url}): {preview}"
+            )
+            raise HTTPException(
+                502,
+                f'LLM API returned invalid JSON (HTTP {resp.status_code}). '
+                f'Response preview: {preview}'
+            ) from exc
 
     async def chat_stream(
         self,
@@ -799,11 +943,23 @@ async def _auto_research(query: str, parse_top: int = 3) -> str:
             )},
         ]
         logger.info(f"[AutoResearch] Sending to LLM ({llm.model}) for synthesis...")
-        resp_data = await llm.chat(messages=messages, temperature=0.3, max_tokens=4096)
-        answer = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')
-        elapsed = time.monotonic() - t0
-        logger.info(f"[AutoResearch] LLM synthesis complete in {round(elapsed, 1)}s")
-        return answer
+        try:
+            resp_data = await llm.chat(messages=messages, temperature=0.3, max_tokens=4096)
+            answer = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            elapsed = time.monotonic() - t0
+            logger.info(f"[AutoResearch] LLM synthesis complete in {round(elapsed, 1)}s")
+            return answer
+        except HTTPException as e:
+            # LLM failed, fall back to raw synthesis
+            logger.warning(
+                f"[AutoResearch] LLM failed: {e.detail}. Falling back to raw synthesis."
+            )
+            fallback = _raw_synthesis(query, search_result, parsed_results)
+            return fallback + f"\n\n*(Note: LLM synthesis failed: {e.detail})*"
+        except Exception as e:
+            logger.error(f"[AutoResearch] Unexpected LLM error: {str(e)}")
+            fallback = _raw_synthesis(query, search_result, parsed_results)
+            return fallback + f"\n\n*(Note: LLM synthesis failed: {str(e)})*"
     else:
         return _raw_synthesis(query, search_result, parsed_results)
 
@@ -1030,51 +1186,19 @@ async def chat_completions(
 
 
 async def _tool_calling_mode(request: ChatCompletionRequest) -> ChatCompletionResponse:
-    """Traditional tool-calling mode (when client sends custom tools)."""
+    """Traditional tool-calling mode (when client sends custom tools).
+    
+    Executes a tool-calling loop (up to 5 rounds) where each LLM response
+    may contain tool calls. Results from tool executions are fed back into
+    the conversation. If the LLM fails, a fallback response is generated
+    from partial tool results.
+    """
     messages: List[Dict[str, Any]] = [{'role': 'system', 'content': (
         'You are ResearchGPT with access to search and parse tools. '
         'Use them to research topics and always cite sources with [1][2][3].'
     )}]
-    for msg in request.messages:
-        m: Dict[str, Any] = {'role': msg.role}
-        if msg.content:
-            m['content'] = msg.content
-        if msg.tool_calls:
-            m['tool_calls'] = [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in msg.tool_calls]
-        if msg.tool_call_id:
-            m['tool_call_id'] = msg.tool_call_id
-        messages.append(m)
-
-    tools_payload = [t.model_dump() for t in RESEARCH_TOOLS]
-    resp_data = {}
-    for _ in range(5):
-        resp_data = await llm.chat(messages=messages, tools=tools_payload, tool_choice=request.tool_choice or 'auto', temperature=request.temperature or 0.3, max_tokens=request.max_tokens or 4096)
-        choice = resp_data.get('choices', [{}])[0]
-        msg = choice.get('message', {})
-        tc_raw = msg.get('tool_calls')
-        if not tc_raw or choice.get('finish_reason') != 'tool_calls':
-            break
-        messages.append(msg)
-        for tc in tc_raw:
-            fn = tc.get('function', {})
-            try:
-                fn_args = json.loads(fn.get('arguments', '{}'))
-            except json.JSONDecodeError:
-                fn_args = {}
-            executor = TOOL_EXECUTORS.get(fn.get('name', ''))
-            result = await _run_in_thread(executor, fn_args) if executor else {'error': 'Unknown tool'}
-            messages.append({'role': 'tool', 'tool_call_id': tc['id'], 'content': json.dumps(result, default=str)[:16000]})
-
-    choice_data = resp_data.get('choices', [{}])[0]
-    msg_data = choice_data.get('message', {})
-    usage_data = resp_data.get('usage', {})
-    return ChatCompletionResponse(
-        model=request.model,
-        choices=[Choice(message=ChatMessage(role='assistant', content=msg_data.get('content', '')), finish_reason=choice_data.get('finish_reason', 'stop'))],
-        usage=Usage(prompt_tokens=usage_data.get('prompt_tokens', 0), completion_tokens=usage_data.get('completion_tokens', 0), total_tokens=usage_data.get('total_tokens', 0)),
-    )
-
-# ===================================================================
+    
+    # Build messages from request, preserving tool call structure
     for msg in request.messages:
         m: Dict[str, Any] = {'role': msg.role}
         if msg.content:
@@ -1095,53 +1219,42 @@ async def _tool_calling_mode(request: ChatCompletionRequest) -> ChatCompletionRe
             m['tool_call_id'] = msg.tool_call_id
         messages.append(m)
 
-    # Prepare tools for LLM
-    tools_payload = None
-    if request.tools is not None:
-        tools_payload = [t.model_dump() for t in request.tools]
-    else:
-        tools_payload = [t.model_dump() for t in RESEARCH_TOOLS]
-
+    tools_payload = [t.model_dump() for t in RESEARCH_TOOLS]
     tool_choice = request.tool_choice or 'auto'
+    resp_data: dict = {}
+    all_tool_results: list = []
+    final_content = ''
+    error_occurred = False
 
     # ---- Tool-calling loop ----
-    MAX_TOOL_ROUNDS = 5
-    all_tool_results = []
-
-    for round_idx in range(MAX_TOOL_ROUNDS):
+    for round_idx in range(5):
         try:
-            if request.stream:
-                # For streaming with tool calling: do the loop non-streaming,
-                # then stream the final answer.
-                resp_data = await llm.chat(
-                    messages=messages, tools=tools_payload,
-                    tool_choice=tool_choice,
-                    temperature=request.temperature or 0.7,
-                    max_tokens=request.max_tokens or 2048,
-                )
-            else:
-                resp_data = await llm.chat(
-                    messages=messages, tools=tools_payload,
-                    tool_choice=tool_choice,
-                    temperature=request.temperature or 0.7,
-                    max_tokens=request.max_tokens or 2048,
-                )
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(502, f'LLM API error: {e.response.status_code} — {e.response.text[:500]}')
-        except Exception as e:
-            raise HTTPException(502, f'LLM API error: {str(e)}')
+            resp_data = await llm.chat(
+                messages=messages, tools=tools_payload,
+                tool_choice=tool_choice,
+                temperature=request.temperature or 0.3,
+                max_tokens=request.max_tokens or 4096,
+            )
+        except HTTPException as exc:
+            logger.error(f"[ToolCalling] Round {round_idx}: LLM error: {exc.detail}")
+            error_occurred = True
+            break
+        except Exception as exc:
+            logger.error(f"[ToolCalling] Round {round_idx}: Unexpected: {str(exc)}")
+            error_occurred = True
+            break
 
         choice = resp_data.get('choices', [{}])[0]
         msg = choice.get('message', {})
         finish = choice.get('finish_reason')
-
-        # Check for tool calls
         tool_calls_raw = msg.get('tool_calls')
+
+        # No tool calls → we have the final answer
         if not tool_calls_raw or finish != 'tool_calls':
-            # No more tool calls — return final answer
+            final_content = msg.get('content', '')
             break
 
-        # Append the assistant's tool-call message
+        # Preserve the assistant's tool call message in conversation
         messages.append(msg)
 
         # Execute each tool call
@@ -1156,7 +1269,7 @@ async def _tool_calling_mode(request: ChatCompletionRequest) -> ChatCompletionRe
             except json.JSONDecodeError:
                 fn_args = {}
 
-            logger.info(f'[Tool call] {fn_name}({json.dumps(fn_args)[:200]})')
+            logger.info(f'[ToolCall] {fn_name}({json.dumps(fn_args)[:200]})')
 
             executor = TOOL_EXECUTORS.get(fn_name)
             if executor:
@@ -1168,72 +1281,28 @@ async def _tool_calling_mode(request: ChatCompletionRequest) -> ChatCompletionRe
                 result = {'error': f'Unknown tool: {fn_name}'}
 
             result_str = json.dumps(result, default=str)
-            all_tool_results.append({'tool': fn_name, 'arguments': fn_args, 'result': result})
+            all_tool_results.append({
+                'tool': fn_name, 'arguments': fn_args, 'result': result,
+            })
 
-            # Append tool result message
             messages.append({
                 'role': 'tool',
                 'tool_call_id': tc_id,
-                'content': result_str[:16000],  # Truncate to avoid token overflow
+                'content': result_str[:16000],
             })
 
-    # Build response
-    if request.stream:
-        return await _build_stream_response(messages, request.model, all_tool_results)
-    else:
-        return _build_sync_response(messages, resp_data, request.model, all_tool_results)
+    # ---- Build final response ----
+    if error_occurred or not final_content:
+        final_content = final_content or _generate_tool_fallback(all_tool_results)
 
-
-def _build_sync_response(
-    messages: list, resp_data: dict, model: str, tool_results: list,
-) -> ChatCompletionResponse:
-    """Build a non-streaming ChatCompletionResponse."""
-    choice_data = resp_data.get('choices', [{}])[0]
-    msg_data = choice_data.get('message', {})
-    finish = choice_data.get('finish_reason', 'stop')
-    usage_data = resp_data.get('usage', {})
-
-    content = msg_data.get('content', '')
-    # If no content but tool results exist, summarize
-    if not content and tool_results:
-        summaries = []
-        for tr in tool_results:
-            if tr['result'] and not tr['result'].get('error'):
-                if tr['tool'] == 'search':
-                    summaries.append(f"Found {tr['result'].get('count', 0)} results for '{tr['result'].get('query', '')}'")
-                elif tr['tool'] in ('parse_url', 'parse_urls'):
-                    summaries.append(f"Parsed content from {tr['result'].get('url', 'URL')}")
-                elif tr['tool'] == 'deep_research':
-                    summaries.append(
-                        f"Research complete: {tr['result'].get('links_collected', 0)} links, "
-                        f"{tr['result'].get('documents_parsed', 0)} documents"
-                    )
-        content = '\n'.join(summaries) if summaries else 'Tool execution completed.'
-
-    # Build tool_calls from resp if present
-    tc_raw = msg_data.get('tool_calls')
-    tool_calls_out = None
-    if tc_raw:
-        tool_calls_out = [
-            ToolCallMessage(
-                id=tc.get('id', ''),
-                function=ToolCallFunction(
-                    name=tc['function']['name'],
-                    arguments=tc['function']['arguments'],
-                ),
-            )
-            for tc in tc_raw
-        ]
-
-    assistant_msg = ChatMessage(
-        role='assistant',
-        content=content,
-        tool_calls=tool_calls_out,
-    )
+    usage_data = resp_data.get('usage', {}) if resp_data else {}
 
     return ChatCompletionResponse(
-        model=model,
-        choices=[Choice(message=assistant_msg, finish_reason=finish)],
+        model=request.model,
+        choices=[Choice(
+            message=ChatMessage(role='assistant', content=final_content),
+            finish_reason='stop',
+        )],
         usage=Usage(
             prompt_tokens=usage_data.get('prompt_tokens', 0),
             completion_tokens=usage_data.get('completion_tokens', 0),
@@ -1242,81 +1311,38 @@ def _build_sync_response(
     )
 
 
-async def _build_stream_response(
-    messages: list, model: str, tool_results: list,
-) -> StreamingResponse:
-    """Build a streaming SSE response. After tool-calling loop, stream the final LLM answer."""
-    stream_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-
-    async def event_generator():
-        # Send role delta
-        role_chunk = ChatCompletionChunk(
-            id=stream_id, model=model,
-            choices=[StreamChoice(delta={'role': 'assistant'}, finish_reason=None)],
+def _generate_tool_fallback(tool_results: list) -> str:
+    """Generate a fallback text response when LLM fails in tool-calling mode."""
+    if not tool_results:
+        return (
+            'Research completed, but the LLM failed to generate a response. '
+            'Please check your LLM_API_BASE configuration and try again.'
         )
-        yield f"data: {role_chunk.model_dump_json()}\n\n"
 
-        # Get final content from LLM (streaming)
-        messages_for_stream = messages.copy()
-        try:
-            async for sse_line in llm.chat_stream(
-                messages=messages_for_stream,
-                tools=[t.model_dump() for t in RESEARCH_TOOLS],
-                tool_choice='auto',
-                temperature=0.7,
-                max_tokens=2048,
-            ):
-                yield sse_line
-        except Exception:
-            # Fallback: construct a summary from tool results
-            content = _summarize_tool_results(tool_results)
-            content_chunk = ChatCompletionChunk(
-                id=stream_id, model=model,
-                choices=[StreamChoice(delta={'content': content}, finish_reason=None)],
-            )
-            yield f"data: {content_chunk.model_dump_json()}\n\n"
-
-        # Send finish
-        finish_chunk = ChatCompletionChunk(
-            id=stream_id, model=model,
-            choices=[StreamChoice(delta={}, finish_reason='stop')],
-        )
-        yield f"data: {finish_chunk.model_dump_json()}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_generator(), media_type='text/event-stream')
-
-
-def _summarize_tool_results(tool_results: list) -> str:
-    """Summarize tool results into a readable text."""
-    parts = []
+    parts = ['Research completed with partial results:\n']
     for tr in tool_results:
-        name = tr['tool']
-        res = tr.get('result', {})
-        if res.get('error'):
-            parts.append(f"**{name}** failed: {res['error']}")
-            continue
-        if name == 'search':
-            links = res.get('links', [])
-            query = res.get('query', '')
-            parts.append(f"Search for **{query}** returned {len(links)} results.")
-            if links:
-                parts.append("Top results:")
-                for url in links[:5]:
-                    parts.append(f"- {url}")
-        elif name == 'parse_url':
-            parts.append(f"Parsed **{res.get('url', 'URL')}** — {res.get('markdown_length', 0)} chars")
-        elif name == 'parse_urls':
-            parts.append(f"Parsed {res.get('success_count', 0)} / {res.get('success_count', 0) + res.get('fail_count', 0)} URLs")
-        elif name == 'deep_research':
-            parts.append(
-                f"Deep research completed: {res.get('links_collected', 0)} links, "
-                f"{res.get('documents_parsed', 0)} documents parsed.\n"
-                f"Summary: {res.get('summary_path', 'N/A')}"
-            )
-        elif name == 'gather_images':
-            parts.append(f"Gathered {res.get('images_found', 0)} images → {res.get('output_dir', '')}")
-    return '\n\n'.join(parts) if parts else 'All tools executed successfully.'
+        result = tr.get('result', {}) or {}
+        tool_name = tr.get('tool', 'unknown')
+        if result.get('error'):
+            parts.append(f'- ❌ **{tool_name}**: {result["error"]}')
+        elif tool_name == 'search':
+            count = result.get('count', 0)
+            query = result.get('query', tr.get('arguments', {}).get('query', ''))
+            parts.append(f'- 🔍 **Search** for "{query}": {count} results')
+            for url in result.get('links', [])[:3]:
+                parts.append(f'  - {url}')
+        elif tool_name in ('parse_url', 'parse_urls'):
+            success = result.get('success_count', result.get('content') and 1 or 0)
+            parts.append(f'- 📄 **Parse**: {success} document(s) parsed')
+        elif tool_name == 'deep_research':
+            links = result.get('links_collected', 0)
+            docs = result.get('documents_parsed', 0)
+            parts.append(f'- 📚 **Deep Research**: {links} links, {docs} documents')
+        elif tool_name == 'gather_images':
+            parts.append(f'- 🖼️ **Images**: {result.get("images_found", 0)} found')
+
+    parts.append('\n*(LLM synthesis failed — returning raw results. Check LLM_API_BASE configuration.)*')
+    return '\n'.join(parts)
 
 
 # ===================================================================
