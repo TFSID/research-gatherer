@@ -4,7 +4,7 @@ import sys
 import os
 import html as html_module
 from logging import DEBUG
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, quote
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'utils'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'libs'))
@@ -70,7 +70,7 @@ class BingImages:
             'first': str(first),
             'tsc': 'ImageHoverTitle',
         }
-        return f'{self.base_url}/images/search?{urlencode(params)}'
+        return f'{self.base_url}/images/search?{urlencode(params, quote_via=quote)}'
 
     def get_image_urls(self, html: str):
         results = []

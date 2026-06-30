@@ -1,0 +1,63 @@
+# ===================================================================
+# Research Gatherer — Docker Ignore
+# ===================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment (secrets — mounted at runtime)
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Output (mounted as volume at runtime)
+research_output/
+research_archive/
+
+# Documentation (not needed in image)
+docs/
+guides/
+*.md
+!README.md
+
+# Test / experiment files
+test.py
+experiment/
+samples/
+
+# Keys / secrets (never bake into image)
+anthropic_keys/
+api_keys.txt
+api_keys2.txt
+results_keys.txt

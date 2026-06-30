@@ -3,7 +3,7 @@ import json
 import sys
 import os
 from logging import DEBUG
-from urllib.parse import urlencode, unquote, urljoin
+from urllib.parse import urlencode, unquote, urljoin, quote
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'utils'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'libs'))
@@ -32,7 +32,7 @@ class YahooImages:
 
     def build_query(self, keyword: str) -> str:
         params = {'p': keyword, 'fr': 'yfp-t', 'fr2': 'p%3As%2Cv%3Ai'}
-        return f'{self.base_url}/search/images;_ylt=?{urlencode(params)}'
+        return f'{self.base_url}/search/images;_ylt=?{urlencode(params, quote_via=quote)}'
 
     def search_run(self, start_url: str):
         results = []

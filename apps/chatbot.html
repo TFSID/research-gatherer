@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ResearchGPT · Chat Interface</title>
+<style>
+  /* === Reset & Base === */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-hover: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-glow: rgba(88,166,255,0.15);
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* === Header === */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  header h1 .badge {
+    font-size: 10px;
+    font-weight: 500;
+    background: var(--accent-glow);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid rgba(88,166,255,0.3);
+  }
+  .status-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px;
+  }
+  .status-dot.disconnected { background: var(--orange); }
+
+  /* === Config Bar === */
+  .config-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  .config-bar label {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .config-bar input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--mono);
+    width: 200px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .config-bar input:focus { border-color: var(--accent); }
+  .config-bar input::placeholder { color: var(--text-dim); opacity: 0.5; }
+
+  /* === Chat Container === */
+  .chat-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+  .chat-container::-webkit-scrollbar { width: 6px; }
+  .chat-container::-webkit-scrollbar-track { background: transparent; }
+  .chat-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* === Messages === */
+  .msg {
+    max-width: 780px;
+    width: fit-content;
+    animation: fadeIn 0.25s ease;
+  }
+  .msg.user { align-self: flex-end; }
+  .msg.assistant { align-self: flex-start; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .msg-bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    line-height: 1.6;
+    font-size: 14px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .msg.user .msg-bubble {
+    background: var(--accent);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant .msg-bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+
+  .msg-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    padding: 0 4px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .msg.user .msg-label { text-align: right; }
+
+  /* === Markdown-like rendering === */
+  .msg-bubble p { margin: 0 0 8px; }
+  .msg-bubble p:last-child { margin-bottom: 0; }
+  .msg-bubble strong { color: #fff; font-weight: 600; }
+  .msg.assistant .msg-bubble strong { color: var(--accent); }
+  .msg-bubble code {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .msg-bubble pre {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .msg-bubble a {
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+  }
+  .msg-bubble a:hover { text-decoration: underline; }
+  .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 6px 0; }
+  .msg-bubble li { margin: 2px 0; }
+  .msg-bubble h1, .msg-bubble h2, .msg-bubble h3 { margin: 12px 0 6px; color: var(--accent); }
+  .msg-bubble h1 { font-size: 16px; }
+  .msg-bubble h2 { font-size: 15px; }
+  .msg-bubble h3 { font-size: 14px; }
+
+  /* Citation markers */
+  .msg-bubble .citation {
+    display: inline-block;
+    background: var(--accent-glow);
+    color: var(--accent);
+    border: 1px solid rgba(88,166,255,0.3);
+    border-radius: 4px;
+    padding: 0 5px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .msg-bubble .citation:hover { background: rgba(88,166,255,0.25); }
+  .msg-bubble blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+    margin: 8px 0;
+    color: var(--text-dim);
+  }
+
+  /* Sources list */
+  .sources {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .sources-title {
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .source-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .source-num {
+    flex-shrink: 0;
+    background: var(--accent-glow);
+    color: var(--accent);
+    border-radius: 4px;
+    padding: 0 5px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--mono);
+  }
+  .source-url {
+    color: var(--accent);
+    font-size: 13px;
+    word-break: break-all;
+  }
+
+  /* Thinking / typing indicator */
+  .thinking {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: fit-content;
+    animation: fadeIn 0.2s ease;
+  }
+  .thinking .dots { display: flex; gap: 4px; }
+  .thinking .dots span {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    animation: bounce 1.2s infinite;
+  }
+  .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+  .thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-4px); } }
+  .thinking .label {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  /* === Input Area === */
+  .input-area {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    flex-shrink: 0;
+  }
+  .input-area textarea {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    resize: none;
+    outline: none;
+    min-height: 44px;
+    max-height: 120px;
+    line-height: 1.4;
+    transition: border-color 0.2s;
+  }
+  .input-area textarea:focus { border-color: var(--accent); }
+  .input-area textarea::placeholder { color: var(--text-dim); opacity: 0.6; }
+  .input-area button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 10px 20px;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    white-space: nowrap;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-area button:hover { opacity: 0.9; }
+  .input-area button:active { transform: scale(0.97); }
+  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .input-area button svg { width: 16px; height: 16px; fill: currentColor; }
+
+  /* === Empty State === */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    gap: 12px;
+    text-align: center;
+    padding: 40px;
+  }
+  .empty-state .icon { font-size: 48px; opacity: 0.3; }
+  .empty-state h2 { font-size: 18px; font-weight: 600; color: var(--text); }
+  .empty-state p { font-size: 14px; max-width: 400px; line-height: 1.5; }
+  .empty-state .hint {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-top: 8px;
+  }
+
+  /* === Error === */
+  .msg.error .msg-bubble {
+    background: rgba(248,81,73,0.1);
+    border: 1px solid rgba(248,81,73,0.3);
+    color: var(--red);
+  }
+
+  /* === Scroll anchor === */
+  .scroll-anchor { height: 1px; }
+
+  /* === BYOK toggle === */
+  .byok-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .byok-toggle input[type="checkbox"] {
+    appearance: none;
+    width: 36px; height: 20px;
+    background: var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .byok-toggle input[type="checkbox"]::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .byok-toggle input[type="checkbox"]:checked {
+    background: var(--accent);
+  }
+  .byok-toggle input[type="checkbox"]:checked::after {
+    transform: translateX(16px);
+    background: #fff;
+  }
+  .byok-toggle .key-icon { font-size: 14px; }
+
+  /* === BYOK fields === */
+  .byok-fields {
+    display: none;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 20px;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .byok-fields.active { display: flex; }
+  .byok-fields label {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .byok-fields input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--mono);
+    width: 200px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .byok-fields input:focus { border-color: var(--accent); }
+  .byok-fields input::placeholder { color: var(--text-dim); opacity: 0.5; }
+  .byok-fields .badge-byok {
+    font-size: 10px;
+    font-weight: 500;
+    background: rgba(61,209,121,0.15);
+    color: #3dd179;
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid rgba(61,209,121,0.3);
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <h1>
+    🔬 ResearchGPT
+    <span class="badge">research-gatherer</span>
+  </h1>
+  <div>
+    <span id="statusDot" class="status-dot"></span>
+    <span id="statusText" style="font-size:13px;color:var(--text-dim);">Connected</span>
+  </div>
+</header>
+
+<!-- Config Bar -->
+<div class="config-bar">
+  <label>
+    API Base
+    <input type="text" id="apiBase" value="http://127.0.0.1:8000" placeholder="http://localhost:8000">
+  </label>
+  <label>
+    API Key
+    <input type="text" id="apiKey" value="" placeholder="optional" style="width:160px;">
+  </label>
+  <label>
+    Model
+    <input type="text" id="modelName" value="research-assistant" style="width:140px;">
+  </label>
+  <label class="byok-toggle">
+    <span class="key-icon">🔑</span>
+    BYOK
+    <input type="checkbox" id="byokToggle" onchange="toggleByok()">
+  </label>
+</div>
+
+<!-- BYOK Fields -->
+<div class="byok-fields" id="byokFields">
+  <span class="badge-byok">BYOK</span>
+  <label>
+    LLM URL
+    <input type="text" id="byokUrl" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" style="width:220px;">
+  </label>
+  <label>
+    API Key
+    <input type="password" id="byokKey" value="" placeholder="sk-..." style="width:220px;">
+  </label>
+  <label>
+    Model
+    <input type="text" id="byokModel" value="gpt-4o" placeholder="gpt-4o" style="width:150px;">
+  </label>
+</div>
+
+<!-- Chat -->
+<div class="chat-container" id="chatContainer">
+  <div class="empty-state" id="emptyState">
+    <div class="icon">🔍</div>
+    <h2>Research Assistant</h2>
+    <p>Ask anything. I'll search across 13+ engines, parse top results, and synthesize a citation-rich answer.</p>
+    <div class="hint">Try: "What is DDoS mitigation?"</div>
+  </div>
+  <div class="scroll-anchor" id="scrollAnchor"></div>
+</div>
+
+<!-- Input -->
+<div class="input-area">
+  <textarea id="inputField" rows="1" placeholder="Ask a research question..." oninput="autoResize(this)"></textarea>
+  <button id="sendBtn" onclick="sendMessage()">
+    <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+    Send
+  </button>
+</div>
+
+<script>
+// ---- DOM refs ----
+const chatContainer = document.getElementById('chatContainer');
+const emptyState = document.getElementById('emptyState');
+const inputField = document.getElementById('inputField');
+const sendBtn = document.getElementById('sendBtn');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const scrollAnchor = document.getElementById('scrollAnchor');
+
+// ---- helpers ----
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function getConfig() {
+  return {
+    base: document.getElementById('apiBase').value.replace(/\/+$/, ''),
+    key: document.getElementById('apiKey').value,
+    model: document.getElementById('modelName').value || 'research-assistant',
+  };
+}
+
+function setStatus(ok, msg) {
+  statusDot.className = 'status-dot' + (ok ? '' : ' disconnected');
+  statusText.textContent = msg;
+}
+
+let isSending = false;
+let byokActive = false;
+
+function toggleByok() {
+  const cb = document.getElementById('byokToggle');
+  const fields = document.getElementById('byokFields');
+  byokActive = cb.checked;
+  fields.classList.toggle('active', byokActive);
+  updateStatusFromHealth();
+}
+
+function updateStatusFromHealth() {
+  if (!byokActive) {
+    setStatus(true, 'Connected');
+    checkHealth();
+    return;
+  }
+  const byok = getByokConfig();
+  if (!byok.url || !byok.key) {
+    setStatus(false, 'BYOK incomplete');
+    statusText.textContent = 'BYOK — fill in URL + Key';
+    return;
+  }
+  setStatus(true, 'BYOK active');
+  try {
+    const host = new URL(byok.url).hostname;
+    statusText.textContent = 'BYOK: ' + byok.model + ' via ' + host;
+  } catch (_) {
+    statusText.textContent = 'BYOK: ' + byok.model;
+  }
+}
+
+function getByokConfig() {
+  return {
+    url: document.getElementById('byokUrl').value.replace(/\/+$/, ''),
+    key: document.getElementById('byokKey').value,
+    model: document.getElementById('byokModel').value || 'gpt-4o',
+  };
+}
+
+const BYOK_SYSTEM_PROMPT = `You are ResearchGPT, an expert AI research assistant. You have been given search results and parsed content from the web. Your task is to synthesize a comprehensive, accurate answer using the provided sources.
+
+## CRITICAL: Citation Rules
+1. Every factual claim MUST be supported by a citation from the sources.
+2. Use inline citation markers: [1], [2], [3], etc. matching the source numbers.
+3. List all sources at the end under "## Sources".
+4. If the sources are insufficient, say so explicitly.
+5. Never fabricate information not present in the provided sources.
+6. When multiple sources agree, cite all of them.
+
+## Response Format
+Provide a clear, well-structured answer with inline citations. End with:
+
+## Sources
+[1] Title — URL
+[2] Title — URL
+...`;
+
+function addMessage(role, content, isError) {
+  // remove empty state
+  emptyState.style.display = 'none';
+
+  const div = document.createElement('div');
+  div.className = 'msg ' + (isError ? 'error' : role);
+
+  const label = document.createElement('div');
+  label.className = 'msg-label';
+  label.textContent = role === 'user' ? 'You' : 'ResearchGPT';
+  div.appendChild(label);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+
+  if (role === 'assistant' && content) {
+    bubble.innerHTML = renderMarkdown(content);
+  } else if (role === 'user') {
+    // escape user input
+    bubble.textContent = content;
+  } else {
+    bubble.textContent = content || '';
+  }
+
+  div.appendChild(bubble);
+  chatContainer.insertBefore(div, scrollAnchor);
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  scrollAnchor.scrollIntoView({ behavior: 'smooth' });
+}
+
+function showThinking() {
+  // remove existing thinking indicator
+  const existing = document.getElementById('thinkingIndicator');
+  if (existing) existing.remove();
+  emptyState.style.display = 'none';
+
+  const div = document.createElement('div');
+  div.className = 'thinking';
+  div.id = 'thinkingIndicator';
+  div.innerHTML = `
+    <span class="label">Researching</span>
+    <span class="dots"><span></span><span></span><span></span></span>
+  `;
+  chatContainer.insertBefore(div, scrollAnchor);
+  scrollToBottom();
+}
+
+function removeThinking() {
+  const el = document.getElementById('thinkingIndicator');
+  if (el) el.remove();
+}
+
+// ---- Markdown renderer ----
+function renderMarkdown(text) {
+  if (!text) return '';
+
+  let html = text;
+
+  // Escape HTML
+  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Code blocks (```...```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const langClass = lang ? ` class="language-${lang}"` : '';
+    return `<pre${langClass}><code>${code.trim()}</code></pre>`;
+  });
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Citation markers [1], [2], etc. -> clickable
+  html = html.replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
+
+  // Bold **text**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Italic *text*
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  // Headings ## Sources / ### etc
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+
+  // Ordered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(?:<ol>)?((?:<li>.*<\/li>\n?)+)(?:<\/ol>)?/g, (match) => {
+    return match.includes('<ol>') ? match : '<ol>' + match + '</ol>';
+  });
+
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // URLs (fallback)
+  html = html.replace(/(?<!href=")(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+
+  // Paragraphs (double newlines)
+  const blocks = html.split(/\n\n+/);
+  if (blocks.length > 1) {
+    html = blocks.map(b => {
+      const trimmed = b.trim();
+      if (!trimmed) return '';
+      if (trimmed.startsWith('<h') || trimmed.startsWith('<pre') || trimmed.startsWith('<ul') || trimmed.startsWith('<ol') || trimmed.startsWith('<blockquote')) return trimmed;
+      return `<p>${trimmed.replace(/\n/g, '<br>')}</p>`;
+    }).filter(Boolean).join('\n');
+  }
+
+  // Single line breaks within paragraphs
+  html = html.replace(/([^>\n])\n([^<\n])/g, '$1<br>$2');
+
+  return html;
+}
+
+// ---- API call ----
+async function sendMessage() {
+  const text = inputField.value.trim();
+  if (!text || isSending) return;
+
+  inputField.value = '';
+  autoResize(inputField);
+  isSending = true;
+  sendBtn.disabled = true;
+
+  addMessage('user', text);
+  showThinking();
+
+  try {
+    if (byokActive) {
+      await sendWithByok(text);
+    } else {
+      await sendWithGatherer(text);
+    }
+  } catch (err) {
+    removeThinking();
+    addMessage('assistant', `**Error:** ${err.message}`, true);
+  }
+
+  isSending = false;
+  sendBtn.disabled = false;
+  inputField.focus();
+}
+
+async function sendWithGatherer(query) {
+  const config = getConfig();
+
+  // health check
+  try {
+    const h = await fetch(config.base + '/health', {
+      headers: config.key ? { 'X-API-Key': config.key } : {},
+    });
+    setStatus(h.ok, h.ok ? 'Connected' : 'Error');
+  } catch (_) {
+    setStatus(false, 'Disconnected');
+  }
+
+  const body = JSON.stringify({
+    model: config.model,
+    messages: [{ role: 'user', content: query }],
+    temperature: 0.3,
+    max_tokens: 4096,
+  });
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.key) headers['X-API-Key'] = config.key;
+
+  const resp = await fetch(config.base + '/v1/chat/completions', {
+    method: 'POST', headers, body,
+  });
+  removeThinking();
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    let detail = `HTTP ${resp.status}`;
+    try { detail = JSON.parse(errText).detail || detail; } catch (_) {}
+    addMessage('assistant', `**Error:** ${detail}`, true);
+    setStatus(false, `Error ${resp.status}`);
+    return;
+  }
+
+  setStatus(true, 'Connected');
+  const data = await resp.json();
+  const content = data?.choices?.[0]?.message?.content || 'No response.';
+  addMessage('assistant', content);
+}
+
+// ---- BYOK flow: search via gatherer → synthesize via user's LLM ----
+async function sendWithByok(query) {
+  const byok = getByokConfig();
+  const config = getConfig();
+
+  // 1. Call gatherer /v1/search
+  const searchUrl = config.base + '/v1/search?q=' + encodeURIComponent(query);
+  const searchHeaders = {};
+  if (config.key) searchHeaders['X-API-Key'] = config.key;
+
+  const searchResp = await fetch(searchUrl, { headers: searchHeaders });
+  if (!searchResp.ok) throw new Error('Search failed: HTTP ' + searchResp.status);
+
+  const searchData = await searchResp.json();
+  const links = searchData.links || [];
+  const count = searchData.count || 0;
+
+  updateStatus('searching');
+  statusText.textContent = 'Searching... ' + count + ' results';
+
+  // 2. Parse top 3 results via gatherer
+  let parsedContent = '';
+  if (links.length > 0) {
+    const topUrls = links.slice(0, 3);
+    const parseResp = await fetch(config.base + '/v1/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...searchHeaders },
+      body: JSON.stringify({ urls: topUrls, include_content: true }),
+    });
+    if (parseResp.ok) {
+      const parseData = await parseResp.json();
+      parsedContent = buildContext(searchData, parseData.results || []);
+    }
+  }
+
+  updateStatus('synthesizing');
+  statusText.textContent = 'Synthesizing with ' + byok.model + '...';
+
+  // 3. Call user's own LLM for synthesis
+  const sourceLines = links.map((url, i) => `[${i + 1}] ${url}`).join('\n');
+  const messages = [
+    { role: 'system', content: BYOK_SYSTEM_PROMPT },
+    { role: 'user', content: `User question: ${query}\n\nSearch results (${count} found, ${Math.min(3, links.length)} parsed):\n${sourceLines}\n\n${parsedContent ? '\n=== Parsed Content ===\n' + parsedContent : ''}` },
+  ];
+
+  const llmResp = await fetch(byok.url + '/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + byok.key,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: byok.model,
+      messages: messages,
+      temperature: 0.3,
+      max_tokens: 4096,
+    }),
+  });
+
+  removeThinking();
+  setStatus(true, 'BYOK ' + byok.model);
+
+  if (!llmResp.ok) {
+    const errText = await llmResp.text().catch(() => '');
+    throw new Error('LLM ' + llmResp.status + ': ' + errText.slice(0, 200));
+  }
+
+  const llmData = await llmResp.json();
+  const content = llmData?.choices?.[0]?.message?.content || 'No response from LLM.';
+  addMessage('assistant', content);
+}
+
+function buildContext(searchData, parsedResults) {
+  const links = searchData.links || [];
+  const sourceMap = {};
+  links.forEach((url, i) => { sourceMap[url] = i + 1; });
+  const parts = [];
+  for (const pr of parsedResults) {
+    if (pr.error) continue;
+    const num = sourceMap[pr.url] || '?';
+    const title = pr.title || 'Untitled';
+    parts.push(`--- Source [${num}] ${title} ---`);
+    parts.push(`URL: ${pr.url}`);
+    if (pr.content) {
+      parts.push(pr.content.slice(0, 6000));
+    }
+    parts.push('---');
+  }
+  return parts.join('\n');
+}
+
+function updateStatus(type) {
+  statusDot.className = 'status-dot';
+  if (type === 'searching') {
+    statusDot.style.background = 'var(--orange)';
+  } else if (type === 'synthesizing') {
+    statusDot.style.background = 'var(--accent)';
+  }
+}
+
+// ---- keyboard ----
+inputField.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// ---- initial focus ----
+inputField.focus();
+
+// ---- health check on load ----
+async function checkHealth() {
+  const config = getConfig();
+  try {
+    const resp = await fetch(config.base + '/health', {
+      headers: config.key ? { 'X-API-Key': config.key } : {},
+    });
+    setStatus(resp.ok, resp.ok ? 'Connected' : 'Error');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.llm?.configured) {
+        statusText.textContent += ' · LLM: ' + (data.llm.model || 'ready');
+      } else {
+        statusText.textContent += ' · LLM not configured';
+      }
+    }
+  } catch (_) {
+    setStatus(false, 'Disconnected');
+  }
+}
+checkHealth();
+
+// Re-check health when config changes
+['apiBase', 'apiKey'].forEach(id => {
+  document.getElementById(id).addEventListener('change', checkHealth);
+});
+
+// BYOK input change handler
+['byokUrl', 'byokKey', 'byokModel'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (byokActive) updateStatusFromHealth();
+  });
+});
+</script>
+</body>
+</html>

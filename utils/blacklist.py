@@ -33,8 +33,8 @@ DOMAIN_BLACKLIST = [
     'instagram.com',
     'alibaba.com',
     'reddit.com',
-    'github.com',
-    # 'archive.org',
+    # 'github.com',
+    'archive.org',
 ]
 
 

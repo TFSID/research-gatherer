@@ -514,7 +514,7 @@ def sanitize_query(query: str) -> str:
     return query.strip()
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         description='Research Gatherer - Deep Research Source Gathering Tool',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -623,67 +623,36 @@ Examples:
                         action='store_true',
                         help='Enable debug mode')
     
-    args = parser.parse_args()
-    
-    if not any([args.keyword, args.keyword_list, args.parse_only, args.gather_images]):
-        parser.print_help()
-        sys.exit(1)
+    parser.add_argument('--interactive', '--tui',
+                        dest='interactive',
+                        action='store_true',
+                        help='Launch the interactive terminal UI (also the default '
+                             'when run with no arguments in an interactive terminal).')
 
-    # ------------------------------------------------------------------
-    # Normalise keyword argument
-    # When -k is given, argparse (with nargs='+') splits on spaces that
-    # the shell already handled.  We rejoin all tokens so that a call like
-    #   -k site:example.com "exact phrase" filetype:pdf
-    # arrives here as the single string:
-    #   'site:example.com exact phrase filetype:pdf'
-    # with the shell having stripped the surrounding quotes.  To preserve
-    # the exact-phrase intent the user should either:
-    #   a) wrap the whole query in an extra set of quotes on the shell, OR
-    #   b) use a -l keyword-list file where quotes are stored verbatim.
-    # Either way we normalise smart/curly quotes -> straight ASCII quotes.
-    # ------------------------------------------------------------------
-    
-    # Setup logging
-    if args.debug_mode:
-        logger.setLevel(DEBUG)
+    return parser
 
-    # --academic expands to a curated domain allow-list unless the user
-    # already provided an explicit --filter
-    if args.academic and not args.filter:
-        args.filter = (
-            "pmc.ncbi.nlm.nih.gov,pubmed.ncbi.nlm.nih.gov,ncbi.nlm.nih.gov,"
-            "apa.org,sciencedirect.com,nature.com,arxiv.org,researchgate.net,"
-            "frontiersin.org,springer.com,link.springer.com,onlinelibrary.wiley.com,"
-            "journals.sagepub.com,jstor.org,tandfonline.com,cambridge.org,"
-            "oxfordacademic.com,academic.oup.com"
-        )
 
-    # Initialize gatherer. --max-runtime is passed as a DURATION; the
-    # gatherer converts it to a monotonic deadline at parse start.
-    gatherer = ResearchGatherer(
-        output_dir=args.output_dir,
-        debug_mode=args.debug_mode,
-        parse_workers=args.parse_workers,
-        jina_timeout=args.jina_timeout,
-        rate_limit_delay=args.rate_limit,
-        max_parse=args.max_parse,
-        deadline=args.max_runtime if args.max_runtime and args.max_runtime > 0 else None,
-    )
-    
-    # Parse-only mode
-    if args.parse_only:
-        logger.info("Parse-only mode: Processing collected links")
-        gatherer.parse_collected_links(keyword_filter=args.filter)
-        gatherer.generate_summary()
-        return
-    
-    # Collect keywords
-    keywords = []
+# Curated academic / peer-reviewed domain allow-list expanded by --academic.
+ACADEMIC_FILTER = (
+    "pmc.ncbi.nlm.nih.gov,pubmed.ncbi.nlm.nih.gov,ncbi.nlm.nih.gov,"
+    "apa.org,sciencedirect.com,nature.com,arxiv.org,researchgate.net,"
+    "frontiersin.org,springer.com,link.springer.com,onlinelibrary.wiley.com,"
+    "journals.sagepub.com,jstor.org,tandfonline.com,cambridge.org,"
+    "oxfordacademic.com,academic.oup.com"
+)
+
+
+def collect_keywords(args) -> List[str]:
+    """Build the keyword/query list from -k or -l (CLI semantics).
+
+    -k joins its tokens into a single query string; -l reads one query per
+    line (BOM-tolerant, '#' comments skipped). Both run through sanitize_query()
+    so smart/curly quotes become plain ASCII quotes.
+    """
+    keywords: List[str] = []
     if args.keyword:
-        # nargs='+' gives us a list; rejoin into a single query string so
-        # that the user can write:  -k site:x.com "phrase" filetype:pdf
-        # The shell strips the inner quotes around "phrase", but everything
-        # is rejoined here as one coherent query string.
+        # nargs='+' gives a list; rejoin into one query string so the user can
+        # write:  -k site:x.com "phrase" filetype:pdf
         raw_query = ' '.join(args.keyword)
         keywords.append(sanitize_query(raw_query))
     elif args.keyword_list:
@@ -699,10 +668,51 @@ Examples:
         else:
             logger.error(f"Keyword list file not found: {args.keyword_list}")
             sys.exit(1)
-    
+    return keywords
+
+
+def run_pipeline(args, keywords: Optional[List[str]] = None):
+    """Run the gather pipeline from a parsed/built args namespace.
+
+    Shared by the CLI entry point and the interactive TUI. When *keywords* is
+    None it is derived from args via collect_keywords(); the TUI passes an
+    explicit list so it can submit multiple distinct queries (like -l).
+    """
+    # Setup logging
+    if args.debug_mode:
+        logger.setLevel(DEBUG)
+
+    # --academic expands to a curated domain allow-list unless the user
+    # already provided an explicit --filter
+    if args.academic and not args.filter:
+        args.filter = ACADEMIC_FILTER
+
+    # Initialize gatherer. --max-runtime is passed as a DURATION; the
+    # gatherer converts it to a monotonic deadline at parse start.
+    gatherer = ResearchGatherer(
+        output_dir=args.output_dir,
+        debug_mode=args.debug_mode,
+        parse_workers=args.parse_workers,
+        jina_timeout=args.jina_timeout,
+        rate_limit_delay=args.rate_limit,
+        max_parse=args.max_parse,
+        deadline=args.max_runtime if args.max_runtime and args.max_runtime > 0 else None,
+    )
+
+    # Parse-only mode
+    if args.parse_only:
+        logger.info("Parse-only mode: Processing collected links")
+        gatherer.parse_collected_links(keyword_filter=args.filter)
+        gatherer.generate_summary()
+        return
+
+    # Collect keywords (derive from args unless the caller supplied them)
+    if keywords is None:
+        keywords = collect_keywords(args)
+
     # Search and collect
     gatherer.search_and_collect(keywords)
-    
+
     # Auto-parse if requested
     if args.auto_parse:
         logger.info("\nStarting auto-parse...")
@@ -724,6 +734,388 @@ Examples:
             min_image_size=args.images_min_size,
         )
         image_gatherer.gather(keywords)
+
+
+class _TUIAbort(Exception):
+    """Raised internally when the user aborts a TUI prompt (Ctrl-C / EOF)."""
+
+
+class ResearchGathererTUI:
+    """Interactive terminal UI shown when the tool is run with no arguments.
+
+    Renders a banner + an auto-generated parameters guide + a numbered menu,
+    then drives the same run_pipeline() the CLI uses. Standard-library based;
+    uses colorama for colour when available and degrades gracefully to plain
+    text otherwise (e.g. when output is piped).
+    """
+
+    MENU = [
+        ('1', 'Search & collect links'),
+        ('2', 'Search + auto-parse'),
+        ('3', 'Parse collected links (parse-only)'),
+        ('4', 'Gather images'),
+        ('5', 'Full pipeline (search + parse + images)'),
+        ('6', 'Show full --help'),
+        ('0', 'Exit'),
+    ]
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        self.parser = parser
+        # Best-effort: let box-drawing characters render on legacy code pages.
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+        self.unicode = self._supports_unicode()
+        self._init_colors()
+
+    # -- environment detection -----------------------------------------
+    @staticmethod
+    def _supports_unicode() -> bool:
+        enc = getattr(sys.stdout, 'encoding', None) or 'ascii'
+        try:
+            '─╔╗╚╝║·…'.encode(enc)
+            return True
+        except Exception:
+            return False
+
+    def _init_colors(self):
+        self._c = {k: '' for k in
+                   ('reset', 'dim', 'bold', 'cyan', 'green', 'yellow', 'red', 'magenta')}
+        if not sys.stdout.isatty():
+            return
+        try:
+            import colorama
+            from colorama import Fore, Style
+            if hasattr(colorama, 'just_fix_windows_console'):
+                colorama.just_fix_windows_console()
+            else:
+                colorama.init()
+            self._c.update(
+                reset=Style.RESET_ALL, dim=Style.DIM, bold=Style.BRIGHT,
+                cyan=Fore.CYAN, green=Fore.GREEN, yellow=Fore.YELLOW,
+                red=Fore.RED, magenta=Fore.MAGENTA,
+            )
+        except Exception:
+            pass  # colorama missing -> plain text
+
+    def c(self, text: str, color: str) -> str:
+        code = self._c.get(color, '')
+        return f"{code}{text}{self._c['reset']}" if code else text
+
+    # -- low-level prompts ---------------------------------------------
+    def _input(self, prompt: str) -> str:
+        try:
+            return input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise _TUIAbort()
+
+    def ask_text(self, label: str, default: str = '') -> str:
+        suffix = f' [{default}]' if default else ''
+        raw = self._input(self.c(f'{label}{suffix}: ', 'cyan')).strip()
+        return raw if raw else default
+
+    def ask_bool(self, label: str, default: bool = False) -> bool:
+        hint = 'Y/n' if default else 'y/N'
+        raw = self._input(self.c(f'{label} ({hint}): ', 'cyan')).strip().lower()
+        return default if not raw else raw[0] == 'y'
+
+    def ask_int(self, label: str, default: int) -> int:
+        while True:
+            raw = self._input(self.c(f'{label} [{default}]: ', 'cyan')).strip()
+            if not raw:
+                return default
+            try:
+                return int(raw)
+            except ValueError:
+                print(self.c('  Please enter a whole number.', 'red'))
+
+    def ask_keywords(self) -> List[str]:
+        print(self.c('Enter keyword(s) / dork queries — one per line.', 'cyan'))
+        print(self.c('  Blank line to finish.  Or type  file:<path>  to load a list.',
+                     'dim'))
+        out: List[str] = []
+        while True:
+            try:
+                raw = self._input(self.c('  > ', 'cyan'))
+            except _TUIAbort:
+                # Treat Ctrl-C during keyword entry as "done with what I have".
+                break
+            stripped = raw.strip()
+            if stripped == '':
+                break
+            if stripped.lower().startswith('file:'):
+                path = stripped[5:].strip()
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8-sig') as f:
+                        loaded = [sanitize_query(ln) for ln in f
+                                  if ln.strip() and not ln.lstrip().startswith('#')]
+                    out.extend(loaded)
+                    print(self.c(f'  Loaded {len(loaded)} keyword(s) from {path}',
+                                 'green'))
+                else:
+                    print(self.c(f'  File not found: {path}', 'red'))
+                continue
+            out.append(sanitize_query(raw))
+        return [k for k in out if k]
+
+    # -- rendering ------------------------------------------------------
+    def _rule(self, width: int = 60) -> str:
+        return self.c(('─' if self.unicode else '-') * width, 'dim')
+
+    def render_banner(self):
+        if sys.stdout.isatty():
+            os.system('cls' if os.name == 'nt' else 'clear')
+        title = ('RESEARCH GATHERER  ·  Interactive' if self.unicode
+                 else 'RESEARCH GATHERER - Interactive')
+        width = 52
+        if self.unicode:
+            tl, tr, bl, br, h, v = '╔', '╗', '╚', '╝', '═', '║'
+        else:
+            tl = tr = bl = br = '+'
+            h, v = '=', '|'
+        print(self.c(tl + h * width + tr, 'cyan'))
+        print(self.c(v + title.center(width) + v, 'cyan'))
+        print(self.c(bl + h * width + br, 'cyan'))
+        print()
+
+    def render_guide(self):
+        print(self.c('PARAMETERS GUIDE', 'bold')
+              + self.c('  (pass these flags directly, or pick an action below)', 'dim'))
+        rows = []
+        for action in self.parser._actions:
+            if not action.option_strings:
+                continue
+            flags = ', '.join(action.option_strings)
+            help_text = ' '.join((action.help or '').split())
+            rows.append((flags, help_text))
+        flag_w = min(max((len(f) for f, _ in rows), default=0), 24)
+        try:
+            term_w = os.get_terminal_size().columns
+        except OSError:
+            term_w = 80
+        help_w = max(20, term_w - flag_w - 6)
+        ell = '…' if self.unicode else '...'
+        for flags, help_text in rows:
+            if len(help_text) > help_w:
+                help_text = help_text[:help_w - len(ell)].rstrip() + ell
+            print('  ' + self.c(flags.ljust(flag_w), 'green') + '  ' + help_text)
+        print()
+
+    def render_menu(self):
+        print(self.c('MAIN MENU', 'bold'))
+        for key, label in self.MENU:
+            print('  ' + self.c(f'[{key}]', 'yellow') + ' ' + label)
+        print()
+
+    # -- CLI-equivalent preview ----------------------------------------
+    @staticmethod
+    def _q(value) -> str:
+        s = str(value)
+        if s == '' or any(ch in s for ch in ' "\t'):
+            return '"' + s.replace('"', '\\"') + '"'
+        return s
+
+    def _equivalent_cli(self, args, keywords) -> str:
+        parts = ['python', os.path.basename(sys.argv[0] or 'research_gatherer.py')]
+        if keywords and not args.parse_only:
+            if len(keywords) == 1:
+                parts += ['-k', self._q(keywords[0])]
+            else:
+                parts += ['-l', '<keyword-file>']
+        if args.output_dir and args.output_dir != 'research_output':
+            parts += ['-o', self._q(args.output_dir)]
+        if args.parse_only:
+            parts.append('--parse-only')
+        if args.auto_parse:
+            parts.append('--auto-parse')
+        if args.gather_images:
+            parts.append('--images')
+            if args.images_min_size != 300:
+                parts += ['--images-min-size', str(args.images_min_size)]
+        if args.academic:
+            parts.append('--academic')
+        elif args.filter:
+            parts += ['--filter', self._q(args.filter)]
+        if args.parse_workers != 1:
+            parts += ['--parse-workers', str(args.parse_workers)]
+        if args.jina_timeout != 30:
+            parts += ['--jina-timeout', str(args.jina_timeout)]
+        if args.max_parse:
+            parts += ['--max-parse', str(args.max_parse)]
+        if args.max_runtime:
+            parts += ['--max-runtime', str(args.max_runtime)]
+        if args.debug_mode:
+            parts.append('-d')
+        return ' '.join(parts)
+
+    # -- shared parse-phase questions ----------------------------------
+    def _ask_parse_opts(self, args):
+        if self.ask_bool('Restrict to academic / peer-reviewed domains (--academic)?',
+                         False):
+            args.academic = True
+        else:
+            flt = self.ask_text('URL filter substrings, comma-separated (blank = none)')
+            if flt:
+                args.filter = flt
+        args.parse_workers = self.ask_int('Parallel parse workers', args.parse_workers)
+        args.jina_timeout = self.ask_int('Per-URL Jina timeout (seconds)',
+                                         args.jina_timeout)
+        args.max_parse = self.ask_int('Max URLs to parse this run (0 = no cap)',
+                                      args.max_parse)
+        args.max_runtime = self.ask_int('Parse wall-clock budget seconds (0 = none)',
+                                        args.max_runtime)
+
+    def _confirm_and_run(self, args, keywords):
+        print()
+        print(self.c('Equivalent CLI:', 'bold'))
+        print('  ' + self.c(self._equivalent_cli(args, keywords), 'magenta'))
+        print()
+        try:
+            if not self.ask_bool('Proceed?', default=True):
+                print(self.c('Cancelled — back to menu.', 'yellow'))
+                return
+        except _TUIAbort:
+            print(self.c('Cancelled — back to menu.', 'yellow'))
+            return
+        print(self._rule())
+        try:
+            run_pipeline(args, keywords=keywords)
+        except SystemExit:
+            # run_pipeline may sys.exit on bad input; keep the TUI alive.
+            pass
+        except Exception as exc:
+            logger.error(f"Pipeline error: {exc}",
+                         exc_info=getattr(args, 'debug_mode', False))
+        print(self._rule())
+        print(self.c('Done.', 'green'))
+        try:
+            self._input(self.c('Press Enter to return to the menu...', 'dim'))
+        except _TUIAbort:
+            pass
+
+    # -- menu actions ---------------------------------------------------
+    def _defaults(self):
+        return self.parser.parse_args([])
+
+    def action_search(self):
+        keywords = self.ask_keywords()
+        if not keywords:
+            print(self.c('No keywords entered — back to menu.', 'yellow'))
+            return
+        args = self._defaults()
+        args.output_dir = self.ask_text('Output directory', args.output_dir)
+        args.debug_mode = self.ask_bool('Debug mode', args.debug_mode)
+        self._confirm_and_run(args, keywords)
+
+    def action_search_parse(self):
+        keywords = self.ask_keywords()
+        if not keywords:
+            print(self.c('No keywords entered — back to menu.', 'yellow'))
+            return
+        args = self._defaults()
+        args.auto_parse = True
+        args.output_dir = self.ask_text('Output directory', args.output_dir)
+        self._ask_parse_opts(args)
+        args.debug_mode = self.ask_bool('Debug mode', args.debug_mode)
+        self._confirm_and_run(args, keywords)
+
+    def action_parse_only(self):
+        args = self._defaults()
+        args.parse_only = True
+        args.output_dir = self.ask_text(
+            'Output directory (must contain collected_links.txt)', args.output_dir)
+        self._ask_parse_opts(args)
+        args.debug_mode = self.ask_bool('Debug mode', args.debug_mode)
+        self._confirm_and_run(args, keywords=None)
+
+    def action_images(self):
+        keywords = self.ask_keywords()
+        if not keywords:
+            print(self.c('No keywords entered — back to menu.', 'yellow'))
+            return
+        args = self._defaults()
+        args.gather_images = True
+        args.output_dir = self.ask_text('Output directory', args.output_dir)
+        args.images_min_size = self.ask_int(
+            'Minimum image dimension in px (0 = all sizes)', args.images_min_size)
+        args.debug_mode = self.ask_bool('Debug mode', args.debug_mode)
+        self._confirm_and_run(args, keywords)
+
+    def action_full(self):
+        keywords = self.ask_keywords()
+        if not keywords:
+            print(self.c('No keywords entered — back to menu.', 'yellow'))
+            return
+        args = self._defaults()
+        args.auto_parse = True
+        args.gather_images = True
+        args.output_dir = self.ask_text('Output directory', args.output_dir)
+        self._ask_parse_opts(args)
+        args.images_min_size = self.ask_int(
+            'Minimum image dimension in px (0 = all sizes)', args.images_min_size)
+        args.debug_mode = self.ask_bool('Debug mode', args.debug_mode)
+        self._confirm_and_run(args, keywords)
+
+    # -- main loop ------------------------------------------------------
+    def run(self):
+        self.render_banner()
+        self.render_guide()
+        dispatch = {
+            '1': self.action_search,
+            '2': self.action_search_parse,
+            '3': self.action_parse_only,
+            '4': self.action_images,
+            '5': self.action_full,
+        }
+        while True:
+            self.render_menu()
+            try:
+                choice = self._input(self.c('Select an option > ', 'cyan')).strip()
+            except _TUIAbort:
+                print(self.c('Goodbye.', 'cyan'))
+                return
+            if choice == '0':
+                print(self.c('Goodbye.', 'cyan'))
+                return
+            if choice == '6':
+                print()
+                self.parser.print_help()
+                print()
+                continue
+            handler = dispatch.get(choice)
+            if handler is None:
+                print(self.c('Invalid option — choose a number from the menu.', 'red'))
+                print()
+                continue
+            try:
+                handler()
+            except _TUIAbort:
+                print(self.c('Cancelled — back to menu.', 'yellow'))
+            print()
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    actionable = any([args.keyword, args.keyword_list,
+                      args.parse_only, args.gather_images])
+
+    # Launch the interactive TUI when explicitly requested, or when no
+    # actionable arguments were given AND we're attached to a real terminal.
+    if args.interactive or (not actionable and sys.stdin.isatty()):
+        ResearchGathererTUI(parser).run()
+        return
+
+    if not actionable:
+        # Non-interactive context (piped / CI) with nothing to do: show the
+        # parameters guide and exit non-zero, preserving scripting behaviour.
+        parser.print_help()
+        sys.exit(1)
+
+    run_pipeline(args)
 
 
 if __name__ == '__main__':

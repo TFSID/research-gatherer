@@ -1,7 +1,7 @@
 import re
 import random
 from logging import DEBUG
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin, urlencode, quote
 from utils.blacklist import is_blacklisted
 from utils.helper import setup_logger, validate_url, random_agent
 from libs.fetch import FetchRequest
@@ -89,7 +89,7 @@ class Google:
     def build_query(self, keyword):
         self.build_clients(keyword)
         search_url = urljoin(self.base_url, '/search')
-        url = '%s?%s' % (search_url, urlencode(self.query))
+        url = '%s?%s' % (search_url, urlencode(self.query, quote_via=quote))
 
         return url
 

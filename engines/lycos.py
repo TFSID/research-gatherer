@@ -1,6 +1,6 @@
 import re
 from logging import DEBUG
-from urllib.parse import urljoin, urlencode, urlparse, parse_qs
+from urllib.parse import urljoin, urlencode, urlparse, parse_qs, quote
 from utils.blacklist import is_blacklisted
 from utils.helper import setup_logger, validate_url, split_url
 from libs.html_parser import NativeHTMLParser
@@ -125,9 +125,9 @@ class Lycos:
 
         if search_url and self.query:
             self.search_url = search_url
-            search_url = '%s?%s' % (search_url, urlencode(self.query))
+            search_url = '%s?%s' % (search_url, urlencode(self.query, quote_via=quote))
         elif self.query:
-            search_url = '%s?%s' % (self.search_url, urlencode(self.query))
+            search_url = '%s?%s' % (self.search_url, urlencode(self.query, quote_via=quote))
 
         return search_url
 

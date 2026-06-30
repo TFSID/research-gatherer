@@ -1,6 +1,6 @@
 import re
 from logging import DEBUG
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 from utils.blacklist import is_blacklisted
 from utils.helper import setup_logger, validate_url
 from libs.html_parser import NativeHTMLParser
@@ -10,7 +10,7 @@ logger = setup_logger(name='Gigablast')
 
 
 class Gigablast:
-    base_url = 'https://www.gigablast.com'
+    base_url = 'https://gigablast.org'
 
     def __init__(self, debug=False):
         self.debug = debug
@@ -22,14 +22,11 @@ class Gigablast:
             logger.setLevel(DEBUG)
 
     def search(self, keyword):
-        self.query.update({'q': str(keyword)})
-        search_url = self.build_query(keyword=str(keyword))
-        if search_url:
-            search_url = urljoin(self.base_url, search_url)
+        self.query.update({'s': str(keyword)})
+        search_url = urljoin(self.base_url, 'web')
+        return self.search_run(search_url, method='POST')
 
-        return self.search_run(search_url)
-
-    def search_run(self, url):
+    def search_run(self, url, method='GET'):
         result = []
         if not url:
             return result
@@ -44,9 +41,12 @@ class Gigablast:
             else:
                 logger.info('Page: %s' % page)
 
-            html = self.fetch.get(url, headers=headers)
-            html_link = self.get_html_link(html, url)
-            links = self.get_links(html_link)
+            if method == 'POST':
+                html = self.fetch.post(url, data=self.query, headers=headers)
+            else:
+                html = self.fetch.get(url, headers=headers)
+
+            links = self.get_links(html)
 
             if not links:
                 empty_page += 1
@@ -76,10 +76,11 @@ class Gigablast:
             if empty_page >= 2:
                 break
 
-            next_page = self.get_next_page(html_link)
+            next_page = self.get_next_page(html)
             if next_page and next_page != url:
                 headers.update({'Referer': url})
                 url = next_page
+                method = 'GET' # Next page links are usually GET requests
             else:
                 break
             page += 1
@@ -89,50 +90,11 @@ class Gigablast:
 
         return result
 
-    def build_query(self, keyword):
-        search_url = ''
-        html = self.fetch.get(self.base_url)
-
-        _parser = NativeHTMLParser()
-        _parser.feed(str(html))
-        _parser.close()
-
-        if _parser.root is None:
-            return search_url
-
-        query = dict(self.query)
-
-        mainform = _parser.root.find('.//form[@action="search"]')
-        if mainform:
-            action = mainform.get('action')
-            if action:
-                search_url = urljoin(self.base_url, action)
-
-            inputs = mainform.findall('.//input[@type="hidden"]')
-            for inp in inputs:
-                _name = inp.get('name')
-                _value = inp.get('value')
-
-                if not _name:
-                    continue
-
-                if _name != 'q':
-                    query.update({_name: _value or ''})
-                else:
-                    query.update({_name: keyword})
-
-        if search_url:
-            search_url = '%s?%s' % (search_url, urlencode(query))
-
-        return search_url
-
     def get_links(self, html=None):
         result = []
         if not html:
             return result
 
-        html = self.get_html_link(html)
-
         _parser = NativeHTMLParser()
         _parser.feed(str(html))
         _parser.close()
@@ -140,14 +102,15 @@ class Gigablast:
         if _parser.root is None:
             return result
 
-        links = _parser.root.findall('.//font//a')
-
-        for link in links:
+        # Find all divs with class "text-result"
+        results = _parser.root.findall('.//div[@class="text-result"]')
+        for res in results:
+            link = res.find('.//a[@class="hover"]')
             if link is not None:
                 _href = link.get('href')
                 valid_url = validate_url(_href)
                 if valid_url:
-                    if not re.search(r'^(.*\.)?gigablast\.com', valid_url, re.I):
+                    if not re.search(r'^(.*\.)?gigablast\.org', valid_url, re.I):
                         result.append(valid_url)
 
         if result:
@@ -155,24 +118,7 @@ class Gigablast:
 
         return result
 
-    def get_html_link(self, html=None, referer=None):
-        search_link = ''
-        patern_uxrl = r'uxrl[\s=]+(uxrl\+)?((?:")(.*?)(?:")|(?:\')(.*?)(?:\'));'
-        if html is not None:
-            uxrl = re.findall(patern_uxrl, str(html), re.I)
-            if uxrl:
-                search_path = ''
-                for u in uxrl:
-                    search_path += u[-1]
-
-                if search_path:
-                    search_link = urljoin(self.base_url, search_path)
-
-        if search_link:
-            html = self.fetch.get(search_link, headers={'Referer': referer})
-        return html
-
-    def get_next_page(self, html, recheck=False):
+    def get_next_page(self, html):
         next_page = ''
         if not html:
             return next_page
@@ -184,29 +130,12 @@ class Gigablast:
         if _parser.root is None:
             return next_page
 
-        div_box = _parser.root.find('.//div[@id="box"]')
-        if div_box:
-            center_tags = div_box.findall('.//center/a')
-
-            if center_tags:
-                start_page = 0
-                next_path = ''
-                for clink in center_tags:
-                    next_href = clink.get('href')
-                    m_start_page = re.match(r'.*&?s=(\d+)', next_href, re.I)
-                    if m_start_page:
-                        spage = int(m_start_page.group(1))
-                        if spage >= start_page:
-                            start_page = spage
-                            next_path = next_href
-
-                if next_path:
-                    next_page = validate_url(urljoin(self.base_url, next_path))
-
-        else:
-            if not recheck:
-                html_link = self.get_html_link(html)
-                return self.get_next_page(html_link, recheck=True)
+        # Find the next page link
+        next_link = _parser.root.find('.//a[@class="next"]')
+        if next_link is not None:
+            next_href = next_link.get('href')
+            if next_href:
+                next_page = validate_url(urljoin(self.base_url, next_href))
 
         return next_page
 

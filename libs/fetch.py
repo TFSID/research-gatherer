@@ -43,7 +43,7 @@ def fetch_url(url, method='GET', headers=None, data=None, timeout=10, cookie_fil
 
     if data:
         if isinstance(data, dict):
-            req.data = urllib.parse.urlencode(data).encode()
+            req.data = urllib.parse.urlencode(data, quote_via=urllib.parse.quote).encode()
         elif isinstance(data, str):
             req.data = data.encode()
         elif isinstance(data, bytes):

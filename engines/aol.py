@@ -1,6 +1,6 @@
 import re
 from logging import DEBUG
-from urllib.parse import urljoin, urlencode, unquote
+from urllib.parse import urljoin, urlencode, unquote, quote
 from utils.blacklist import is_blacklisted
 from utils.helper import setup_logger, validate_url
 from libs.html_parser import NativeHTMLParser
@@ -116,7 +116,7 @@ class Aol:
                     self.query.update({_name: _value or ''})
 
         if search_url:
-            search_url = '%s?%s' % (search_url, urlencode(self.query))
+            search_url = '%s?%s' % (search_url, urlencode(self.query, quote_via=quote))
 
         return search_url
 

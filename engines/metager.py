@@ -1,7 +1,7 @@
 import re
 import base64
 from logging import DEBUG
-from urllib.parse import urljoin, urlencode, urlparse, unquote, parse_qs
+from urllib.parse import urljoin, urlencode, urlparse, unquote, parse_qs, quote
 from utils.blacklist import is_blacklisted
 from utils.helper import setup_logger, validate_url, decode_bytes, split_url
 from libs.html_parser import NativeHTMLParser
@@ -118,7 +118,7 @@ class MetaGer:
                     self.query.update({_name: keyword})
 
         if search_url:
-            search_url = '%s?%s' % (search_url, urlencode(self.query))
+            search_url = '%s?%s' % (search_url, urlencode(self.query, quote_via=quote))
 
         return search_url
 

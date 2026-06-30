@@ -3,7 +3,7 @@ import json
 import sys
 import os
 from logging import DEBUG
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, quote
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'utils'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'libs'))
@@ -45,7 +45,7 @@ class GoogleImages:
             'hl': 'en',
             'gl': 'us',
         }
-        return f'{self.base_url}/search?{urlencode(params)}'
+        return f'{self.base_url}/search?{urlencode(params, quote_via=quote)}'
 
     def search_run(self, start_url: str):
         results = []

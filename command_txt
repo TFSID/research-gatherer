@@ -1,0 +1,11 @@
+python research_gatherer.py -k "\"sk-ant-api\" site:github.com" -o anthropic_keys --auto-parse --parse-workers 1 -d
+
+python research_gatherer.py -l api_keys.txt -o anthropic_keys --auto-parse --parse-workers 1 -d
+python research_gatherer.py -l api_keys2.txt -o anthropic_keys/env --auto-parse --parse-workers 1 -d
+
+
+api keys regex
+
+\bsk-ant-api\d{2}-[a-zA-Z0-9-_]{30,60}\b
+^sk-ant-api\d{2}-[a-zA-Z0-9-_]{30,80}$
+\bsk-ant-(?:api\d{2}-)?[a-zA-Z0-9-_]{30,80}\b
